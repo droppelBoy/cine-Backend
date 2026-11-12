@@ -29,14 +29,56 @@ class ReservaSerializer(serializers.ModelSerializer):
         model = Reserva
         fields = '__all__'
 
-    def validate(self, data):
-        funcion = data.get('funcion')
-        cantidad = data.get('cantidad_asientos')
-        if funcion and cantidad:
-            if cantidad > funcion.asientos_disponibles:
-                raise serializers.ValidationError(
-                    f"No hay suficientes asientos disponibles. Quedan solo {funcion.asientos_disponibles}."
-                )
+     def validate(self, data):
+        funcion = data.get('funcion', getattr(self.instance, 'funcion', None))
+        cantidad = data.get('cantidad_asientos', getattr(self.instance, 'cantidad_asientos', None))
+        asientos = data.get('asientos_seleccionados', getattr(self.instance, 'asientos_seleccionados', ''))
+
+        if not funcion or cantidad is None:
+            return data
+
+        if cantidad < 1:
+            raise serializers.ValidationError(
+                "Debes reservar al menos un asiento."
+            )
+
+        lista_asientos = [
+            asiento.strip().upper()
+            for asiento in asientos.split(',')
+            if asiento.strip()
+        ]
+
+        if len(lista_asientos) != cantidad:
+            raise serializers.ValidationError(
+                "La cantidad de asientos no coincide con los seleccionados."
+            )
+
+        if len(lista_asientos) != len(set(lista_asientos)):
+            raise serializers.ValidationError(
+                "No puedes seleccionar el mismo asiento dos veces."
+            )
+
+        reservas = Reserva.objects.filter(funcion=funcion)
+        if self.instance:
+            reservas = reservas.exclude(pk=self.instance.pk)
+
+        ocupados = set()
+        for reserva in reservas:
+            ocupados.update(
+                asiento.strip().upper()
+                for asiento in reserva.asientos_seleccionados.split(',')
+            )
+
+        if ocupados.intersection(lista_asientos):
+            raise serializers.ValidationError(
+                "Uno o más asientos seleccionados ya están reservados."
+            )
+
+        if self.instance is None and cantidad > funcion.asientos_disponibles:
+            raise serializers.ValidationError(
+                f"Solo quedan {funcion.asientos_disponibles} asientos disponibles."
+            )
+
         return data
 
     def create(self, validated_data):
