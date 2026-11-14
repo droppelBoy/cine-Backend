@@ -22,3 +22,11 @@ class FuncionViewSet(viewsets.ModelViewSet):
 class ReservaViewSet(viewsets.ModelViewSet):
     queryset = Reserva.objects.all()
     serializer_class = ReservaSerializer
+     def perform_destroy(self, instance):
+        funcion = instance.funcion
+        cantidad = instance.cantidad_asientos
+
+        instance.delete()
+
+        funcion.asientos_disponibles += cantidad
+        funcion.save(update_fields=['asientos_disponibles'])
