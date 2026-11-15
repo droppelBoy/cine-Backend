@@ -1,5 +1,9 @@
+
+
+from django.db import transaction
 from rest_framework import serializers
 from .models import Pelicula, Sala, Funcion, Reserva
+
 
 class PeliculaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -8,13 +12,17 @@ class PeliculaSerializer(serializers.ModelSerializer):
 
     def validate_precio(self, value):
         if value < 0:
-            raise serializers.ValidationError("El precio no puede ser negativo.")
+            raise serializers.ValidationError(
+                "El precio no puede ser negativo."
+            )
         return value
+
 
 class SalaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sala
         fields = '__all__'
+
 
 class FuncionSerializer(serializers.ModelSerializer):
     pelicula_titulo = serializers.ReadOnlyField(source='pelicula.titulo')
@@ -24,15 +32,27 @@ class FuncionSerializer(serializers.ModelSerializer):
         model = Funcion
         fields = '__all__'
 
+
 class ReservaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Reserva
         fields = '__all__'
 
-     def validate(self, data):
-        funcion = data.get('funcion', getattr(self.instance, 'funcion', None))
-        cantidad = data.get('cantidad_asientos', getattr(self.instance, 'cantidad_asientos', None))
-        asientos = data.get('asientos_seleccionados', getattr(self.instance, 'asientos_seleccionados', ''))
+    def validate(self, data):
+        funcion = data.get(
+            'funcion',
+            getattr(self.instance, 'funcion', None)
+        )
+
+        cantidad = data.get(
+            'cantidad_asientos',
+            getattr(self.instance, 'cantidad_asientos', None)
+        )
+
+        asientos = data.get(
+            'asientos_seleccionados',
+            getattr(self.instance, 'asientos_seleccionados', '')
+        )
 
         if not funcion or cantidad is None:
             return data
@@ -44,7 +64,7 @@ class ReservaSerializer(serializers.ModelSerializer):
 
         lista_asientos = [
             asiento.strip().upper()
-            for asiento in asientos.split(',')
+            for asiento in (asientos or '').split(',')
             if asiento.strip()
         ]
 
@@ -59,14 +79,17 @@ class ReservaSerializer(serializers.ModelSerializer):
             )
 
         reservas = Reserva.objects.filter(funcion=funcion)
+
         if self.instance:
             reservas = reservas.exclude(pk=self.instance.pk)
 
         ocupados = set()
+
         for reserva in reservas:
             ocupados.update(
                 asiento.strip().upper()
                 for asiento in reserva.asientos_seleccionados.split(',')
+                if asiento.strip()
             )
 
         if ocupados.intersection(lista_asientos):
@@ -74,17 +97,77 @@ class ReservaSerializer(serializers.ModelSerializer):
                 "Uno o más asientos seleccionados ya están reservados."
             )
 
-        if self.instance is None and cantidad > funcion.asientos_disponibles:
+        disponibles = funcion.asientos_disponibles
+
+        if self.instance and self.instance.funcion_id == funcion.id:
+            disponibles += self.instance.cantidad_asientos
+
+        if cantidad > disponibles:
             raise serializers.ValidationError(
-                f"Solo quedan {funcion.asientos_disponibles} asientos disponibles."
+                f"Solo quedan {disponibles} asientos disponibles."
             )
 
         return data
 
+    @transaction.atomic
     def create(self, validated_data):
-        funcion = validated_data['funcion']
+        funcion = Funcion.objects.select_for_update().get(
+            pk=validated_data['funcion'].pk
+        )
+
+        validated_data['funcion'] = funcion
+
+        self.validate(validated_data)
+
         cantidad = validated_data['cantidad_asientos']
-        # Descontar asientos al confirmar la reserva
+
+        reserva = super().create(validated_data)
+
         funcion.asientos_disponibles -= cantidad
-        funcion.save()
-        return super().create(validated_data)
+        funcion.save(update_fields=['asientos_disponibles'])
+
+        return reserva
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        funcion_anterior = Funcion.objects.select_for_update().get(
+            pk=instance.funcion_id
+        )
+
+        funcion_nueva_id = validated_data.get(
+            'funcion',
+            instance.funcion
+        ).pk
+
+        if funcion_nueva_id == funcion_anterior.pk:
+            funcion_nueva = funcion_anterior
+        else:
+            funcion_nueva = Funcion.objects.select_for_update().get(
+                pk=funcion_nueva_id
+            )
+
+        validated_data['funcion'] = funcion_nueva
+
+        self.validate(validated_data)
+
+        cantidad_anterior = instance.cantidad_asientos
+        cantidad_nueva = validated_data.get(
+            'cantidad_asientos',
+            cantidad_anterior
+        )
+
+        reserva = super().update(instance, validated_data)
+
+        funcion_anterior.asientos_disponibles += cantidad_anterior
+        funcion_nueva.asientos_disponibles -= cantidad_nueva
+
+        funcion_anterior.save(
+            update_fields=['asientos_disponibles']
+        )
+
+        if funcion_nueva.pk != funcion_anterior.pk:
+            funcion_nueva.save(
+                update_fields=['asientos_disponibles']
+            )
+
+        return reserva
