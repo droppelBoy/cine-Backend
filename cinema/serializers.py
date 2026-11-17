@@ -61,6 +61,11 @@ class ReservaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Debes reservar al menos un asiento."
             )
+        if cantidad > 4:
+            raise serializers.ValidationError(
+         "No puedes reservar mas de 4 asientos "
+         )
+    
 
         lista_asientos = [
             asiento.strip().upper()
